@@ -2,6 +2,8 @@
 
 This project contains CDK stacks for Fargate build, and CICD pipeline for Fargate.
 
+The folder `codecommit` should be a separate repository as per with your application details
+
 The `cdk.json` file tells the CDK Toolkit how to execute your app.
 
 ## Useful commands
