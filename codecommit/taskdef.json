@@ -11,7 +11,7 @@
         "secretOptions": [],
         "options": {
           "awslogs-group": "/aws/ecs/container",
-          "awslogs-region": "ca-central-1",
+          "awslogs-region": "ap-south-1",
           "awslogs-stream-prefix": "container-ecs-logs"
         }
       },
