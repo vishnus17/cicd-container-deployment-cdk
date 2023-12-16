@@ -1,0 +1,67 @@
+{
+  "executionRoleArn": "taskExecutionRoleARN",
+  "taskRoleArn": "taskRoleARN",
+  "containerDefinitions": [
+    {
+      "name": "container", 
+      "image": "<IMAGE_NAME>",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "secretOptions": [],
+        "options": {
+          "awslogs-group": "/aws/ecs/container",
+          "awslogs-region": "ca-central-1",
+          "awslogs-stream-prefix": "container-ecs-logs"
+        }
+      },
+      "portMappings": [
+        {
+          "hostPort": 80,
+          "protocol": "tcp",
+          "containerPort": 80
+        },
+        {
+          "hostPort": 2049,
+          "protocol": "tcp",
+          "containerPort": 2049
+        }
+      ],
+      "secrets": [
+        {
+          "name": "secret",
+          "valueFrom": "/secret/ssmstore"
+        }
+      ],
+      "environment": [ 
+      ],
+      "mountPoints": [
+        {
+          "readOnly": false,
+          "containerPath": "/var/www/html/container/userfiles",
+          "sourceVolume": "efs-container-01"
+        }
+      ]
+    }
+  ],
+  "volumes": [
+    {
+      "name": "efs-container-01",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-1243123123",
+        "transitEncryption": "ENABLED",
+        "authorizationConfig": {
+          "accessPointId": "fsap-1243123123",
+          "iam": "ENABLED"
+        }
+      }
+    }
+  ],
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "1024",
+  "family": "container"
+}
