@@ -1,5 +1,4 @@
-import * as cdk from 'aws-cdk-lib';
-import { Duration, Stack, StackProps, StageProps, Stage } from 'aws-cdk-lib';
+import { StageProps, Stage } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { containerFargateCdkStack } from './container-fargate-cdk-stack';

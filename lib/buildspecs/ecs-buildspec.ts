@@ -1,4 +1,4 @@
-export const ecsBuildSpectContent = {
+export const ecsBuildSpecContent = {
   version: "0.2",
   phases: {
     pre_build: {

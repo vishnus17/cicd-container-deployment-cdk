@@ -70,27 +70,34 @@ export class containerBuildPipelineStack extends Stack {
     ecrRepo.addToResourcePolicy(ecrPolicy);
 
 
-    
     /* Create CodeBuild to build the project and all necessary roles for the CodeBuild */
     const ecsServiceRole = new iam.Role(this, `ecs-${appName}-ServiceRole`, {
       roleName: `role-${appName}-serviceRole`,
-      assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com')
+      assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
+      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName('AWSCodeBuildDeveloperAccess')],
     });
 
-    const ecsInlinePolicy = new iam.PolicyStatement({
+    ecsServiceRole.addToPolicy(new PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
         'iam:PassRole',
         'sts:AssumeRole',
-        "codecommit:*",
-        'ecr:*'
       ],
       resources: ['*']
-    });
+    }));
 
-    ecsServiceRole.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('AWSCodeBuildDeveloperAccess'))
-    ecsServiceRole.addToPolicy(ecsInlinePolicy);
+    ecsServiceRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        "codecommit:*",
+        "ecr:*"
+      ],
+      resources: [
+        codeRepo.repositoryArn,
+        ecrRepo.repositoryArn
+      ],
+    }));
 
+    // CodeBuild to build the docker image
     const project = new codebuild.Project(this, `${appName}-project`, {
       projectName: `codebuild-${appName}-${regionShort}-01`,
       role: ecsServiceRole,
@@ -112,9 +119,11 @@ export class containerBuildPipelineStack extends Stack {
     /* Create Lambda, and Lambda roles to trigger CodeBuild project on a push to CodeCommit */
     const helperLambdaServiceRole = new iam.Role(this, `${appName}-triggerLambda`, {
       roleName: `role-${appName}-triggerLambda`,
-      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')],
     });
-    const helperLambdaInlinePolicyForLambda = new iam.PolicyStatement({
+
+    helperLambdaServiceRole.addToPolicy(new PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
         'iam:PassRole',
@@ -124,10 +133,7 @@ export class containerBuildPipelineStack extends Stack {
         'codebuild:Update*'
       ],
       resources: ['*']
-    });
-
-    helperLambdaServiceRole.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'))
-    helperLambdaServiceRole.addToPolicy(helperLambdaInlinePolicyForLambda);
+    }));
 
     const triggerTrafficLambda = new lambda.Function(this, 'triggerBuildLambda', {
       code: lambda.Code.fromAsset(

@@ -8,19 +8,19 @@ export interface containerRoute53Props extends StackProps {
 }
 
 export class containerRoute53 extends Stack {
-  constructor(scope: Construct, id: string, props?: containerRoute53Props) {
+  constructor(scope: Construct, id: string, props: containerRoute53Props) {
     super(scope, id, props);
 
-    const stageName = props ? props.stageName : '';
-    const albDNS = props ? props.albDNS: '';
+    const stageName = props.stageName;
+    const albDNS = props.albDNS;
 
     const zone = route53.HostedZone.fromLookup(this, 'hostedZone', {
       domainName: 'example.com'
     });
 
-    const drupal = new route53.CnameRecord(this, 'conatinerCName', {
+    new route53.CnameRecord(this, 'conatinerCName', {
       domainName: albDNS,
-      recordName: `container.example.com`,
+      recordName: stageName === 'prod' ? `container.example.com` : `${stageName}-container.example.com`,
       zone: zone,
     });
   }

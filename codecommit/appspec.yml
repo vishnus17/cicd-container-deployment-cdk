@@ -6,4 +6,4 @@ Resources:
         TaskDefinition: <TASK_DEFINITION>
         LoadBalancerInfo: 
           ContainerName: "container"
-          ContainerPort: 80
+          ContainerPort: 8443

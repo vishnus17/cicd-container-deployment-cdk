@@ -11,11 +11,10 @@ import { MultiAccountECS } from './multi-account-ecs';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { PolicyStatement } from "aws-cdk-lib/aws-iam";
-import { ecsBuildSpectContent } from "./buildspecs/ecs-buildspec";
+import { ecsBuildSpecContent } from "./buildspecs/ecs-buildspec";
 import { codeDeployHelperContent } from "./buildspecs/codedeploy-helper-buildspec";
 import { trafficRouteHelperContent } from "./buildspecs/traffic-route-buildspec";
-import * as sns from "aws-cdk-lib/aws-sns";
-
+import * as path from 'path';
 export interface containerCICDCdkStackPros extends StackProps {
   accountId: string;
   appName: string;
@@ -56,8 +55,6 @@ export class containerCICDCdkStack extends Stack {
     const pubSub3 = props.pubSub3;
     const opsAccountId = props.opsAccountId;
 
-    const ecrRepo = ecr.Repository.fromRepositoryName(this, `${appName}-ecr`, `${appName}`);
-
     // get an instance of previously deployed ECS stack
     const multiEcs = new MultiAccountECS(
       this,
@@ -80,23 +77,18 @@ export class containerCICDCdkStack extends Stack {
     );
 
 
-
-
-
     /* Cross-Account Artifacts
       This will create S3 bucket to store the artifacts by the ECS deployment pipeline.
       For any cross-account S3 buckets, CMK is required. It will also create the KMS and
       set resource policies and IAM roles to be used by the ECS deployment
     */
-    const prodDeploymentRole = iam.Role.fromRoleArn(this, 'ProdDeploymentRole', `arn:aws:iam::${opsAccountId}:role/CloudFormationDeploymentRole`, {
-      mutable: false
-    });
 
     const prodAccountRootPrincipal = new iam.AccountPrincipal(opsAccountId);
 
     const key = new kms.Key(this, 'ArtifactKey', {
       alias: `key/${appName}-${stageName}-artifact-key`
     });
+
     key.grantDecrypt(prodAccountRootPrincipal);
     key.addToResourcePolicy(
       new PolicyStatement(
@@ -124,6 +116,7 @@ export class containerCICDCdkStack extends Stack {
       encryption: s3.BucketEncryption.KMS,
       encryptionKey: key
     });
+
     artifactBucket.grantPut(prodAccountRootPrincipal);
     artifactBucket.grantRead(prodAccountRootPrincipal);
     artifactBucket.addToResourcePolicy(
@@ -140,6 +133,7 @@ export class containerCICDCdkStack extends Stack {
         principals: [new iam.AccountPrincipal(accountId)]
       })
     );
+
     artifactBucket.addToResourcePolicy(
       new PolicyStatement({
         resources: [
@@ -165,6 +159,9 @@ export class containerCICDCdkStack extends Stack {
     const ecrSourceOutput = new codepipeline.Artifact();
     const ecsSourceOutput = new codepipeline.Artifact();
     
+    // ECR Repo
+    const ecrRepo = ecr.Repository.fromRepositoryName(this, `${appName}-ecr`, `${appName.toLowerCase()}`);
+
     const ecsRepo = stageName === 'sbx' ?
       codecommit.Repository.fromRepositoryName(this,'ecsRepo', `${appName}EcsRepo-${stageName}-${regionShort}-01`) :
       new codecommit.Repository(this, `${appName}-${stageName}-ecsrepo`, {
@@ -174,49 +171,26 @@ export class containerCICDCdkStack extends Stack {
 
     // IAM role for the codebuild below
     const ecsCodeBuildRole = new iam.Role(this, `ecs-${stageName}-ServiceRole`, {
-      assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com')
+      assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
+      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName('AWSCodeBuildDeveloperAccess')],
     });
 
-    const ecsInlinePolicy = new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
+    ecsCodeBuildRole.addToPolicy(new PolicyStatement({
       actions: [
         'iam:PassRole',
         'sts:AssumeRole'
       ],
       resources: ['*']
-    });
+    }));
 
-    ecsCodeBuildRole.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('AWSCodeBuildDeveloperAccess'))
-    ecsCodeBuildRole.addToPolicy(ecsInlinePolicy);
-
-    // ecs stage project
-    const ecsProject = new codebuild.Project(this, `${appName}-${stageName}-ecs-build`, {
-      projectName: `codebuild-${appName}EcsBuild-${stageName}-${regionShort}-01`,
-      role: ecsCodeBuildRole,
-      environment: {
-        buildImage: codebuild.LinuxBuildImage.AMAZON_LINUX_2_4,
-        privileged: true
-      },
-      environmentVariables: {
-        'CLUSTER_NAME': {
-          value: `${multiEcs.clusterName}`
-        },
-        'ECR_REPO_URI': {
-          value: `${ecrRepo.repositoryUri}`
-        },
-        'WORKLOAD_ACCT_DEPLOYER_ROLE': {
-          value: `${multiEcs.deployRole.roleArn}`
-        }
-      },
-      buildSpec: codebuild.BuildSpec.fromObject(ecsBuildSpectContent)
-    });
-    ecsProject.addToRolePolicy(new PolicyStatement({
+    ecsCodeBuildRole.addToPolicy(new PolicyStatement({
       actions: [
         'ecr:*'
       ],
-      resources: ['*']
+      resources: [ecrRepo.repositoryArn]
     }));
 
+    // Source Actions for CodePipeline
     const ecsStageSourceAction = new codepipeline_actions.CodeCommitSourceAction({
       actionName: "CodeCommit",
       repository: ecsRepo,
@@ -228,8 +202,25 @@ export class containerCICDCdkStack extends Stack {
       actionName: "ECR",
       repository: ecrRepo,
       output: ecrSourceOutput
-    })
+    });
 
+    // ECS task definition build
+    const ecsProject = new codebuild.Project(this, `${appName}-${stageName}-ecs-build`, {
+      projectName: `codebuild-${appName}EcsBuild-${stageName}-${regionShort}-01`,
+      role: ecsCodeBuildRole,
+      environment: {
+        buildImage: codebuild.LinuxBuildImage.AMAZON_LINUX_2_4,
+        privileged: true
+      },
+      environmentVariables: {
+        'WORKLOAD_ACCOUNT_DEPLOYER_ROLE': {
+          value: `${multiEcs.deployRole.roleArn}`
+        }
+      },
+      buildSpec: codebuild.BuildSpec.fromObject(ecsBuildSpecContent)
+    });
+
+    // ECS task definition build action
     const ecsBuildAction = new codepipeline_actions.CodeBuildAction({
       actionName: 'CodeBuild',
       project: ecsProject,
@@ -238,23 +229,24 @@ export class containerCICDCdkStack extends Stack {
       outputs: [ecsBuildOutput]
     });
 
-    // IAM role for the codebuild below
-    const codeDeployHelpeServiceRole = new iam.Role(this, `${stageName}-helperCodeDeploy`, {
+    // CodeDeploy helper role
+    const codeDeployHelperServiceRole = new iam.Role(this, `${stageName}-helperCodeDeploy`, {
       roleName: `role-${appName}CodeDeployerLambda-${stageName}`,
-      assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com')
+      assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
+      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName('AWSCodeBuildDeveloperAccess')],
     });
 
-    const helperCodeDeployInlinePolicy = new iam.PolicyStatement({
+    codeDeployHelperServiceRole.addToPolicy(new PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
         'iam:PassRole',
         'sts:AssumeRole'
       ],
       resources: ['*']
-    });
+    }));
 
     // artifact bucket access policy
-    const helperCodeDeployS3Policy = new iam.PolicyStatement({
+    codeDeployHelperServiceRole.addToPolicy(new PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
         's3:PutObject',
@@ -263,14 +255,10 @@ export class containerCICDCdkStack extends Stack {
         `${artifactBucket.bucketArn}`,
         `${artifactBucket.bucketArn}/*`
       ]
-    })
-
-    codeDeployHelpeServiceRole.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('AWSCodeBuildDeveloperAccess'))
-    codeDeployHelpeServiceRole.addToPolicy(helperCodeDeployInlinePolicy);
-    codeDeployHelpeServiceRole.addToPolicy(helperCodeDeployS3Policy);
+    }));
 
     // give service role putobject access to s3
-    artifactBucket.grantPut(codeDeployHelpeServiceRole);
+    artifactBucket.grantPut(codeDeployHelperServiceRole);
 
     // Create a deployment in CodeDeploy
     const codeDeployHelperProject = new codebuild.Project(this, `${appName}-${stageName}-codedeploy-helper`, {
@@ -279,15 +267,9 @@ export class containerCICDCdkStack extends Stack {
         buildImage: codebuild.LinuxBuildImage.AMAZON_LINUX_2_4,
         privileged: true
       },
-      role: codeDeployHelpeServiceRole,
+      role: codeDeployHelperServiceRole,
       environmentVariables: {
-        'CLUSTER_NAME': {
-          value: `${multiEcs.clusterName}`
-        },
-        'ECR_REPO_URI': {
-          value: `${ecrRepo.repositoryUri}`
-        },
-        'WORKLOAD_ACCT_DEPLOYER_ROLE': {
+        'WORKLOAD_ACCOUNT_DEPLOYER_ROLE': {
           value: `${multiEcs.deployRole.roleArn}`
         },
         'CODEDEPLOY_APP_NAME': {
@@ -295,29 +277,30 @@ export class containerCICDCdkStack extends Stack {
         },
         'CODEDEPLOY_GROUP_NAME': {
           value: `${multiEcs.codeDeployGroupName}`
-        }
+        },
+        'STAGE_NAME': {
+          value: `${stageName}`
+        },
+        'APP_NAME': {
+          value: `${appName}`
+        },
       },
       buildSpec: codebuild.BuildSpec.fromObject(codeDeployHelperContent)
     });
 
+    // CodeDeploy action
     const codeDeployHelperAction = new codepipeline_actions.CodeBuildAction({
       actionName: 'CodeBuild',
       project: codeDeployHelperProject,
       input: ecsBuildOutput,
       outputs: [],
       variablesNamespace: "custompipeline"
-    })
-
-    // Traffic reroute approval Stage
-    const topic = new sns.Topic(this, `${appName}-${stageName}-topic`, {
-      displayName: `sns-${appName}-${stageName}-${regionShort}-01`,
-      topicName: `${appName}-${stageName}-topic`
-    })
-    const approvalAction = new codepipeline_actions.ManualApprovalAction({
-      actionName: "Approve-Route-Traffic",
-      notificationTopic: sns.Topic.fromTopicArn(this, `${appName}-${stageName}-route-traffic-approval`, topic.topicArn)
     });
 
+    // Manual approval action
+    const approvalAction = new codepipeline_actions.ManualApprovalAction({
+      actionName: "Approve-Route-Traffic",
+    });   
 
     // traffic re-route codebuild
     const trafficRouteHelperProject = new codebuild.Project(this, `${appName}-${stageName}-traffic-helper`, {
@@ -326,13 +309,10 @@ export class containerCICDCdkStack extends Stack {
         buildImage: codebuild.LinuxBuildImage.AMAZON_LINUX_2_4,
         privileged: true
       },
-      role: codeDeployHelpeServiceRole,
+      role: codeDeployHelperServiceRole,
       environmentVariables: {
-        'WORKLOAD_ROLE': {
+        'WORKLOAD_ACCOUNT_DEPLOYER_ROLE': {
           value: `${multiEcs.deployRole.roleArn}`
-        },
-        'CODEDEPLOY_APP_NAME': {
-          value: `${multiEcs.codeDeployAppName}`
         },
         'CODEDEPLOY_GROUP_NAME': {
           value: `${multiEcs.codeDeployGroupName}`
@@ -341,6 +321,7 @@ export class containerCICDCdkStack extends Stack {
       buildSpec: codebuild.BuildSpec.fromObject(trafficRouteHelperContent)
     });
 
+    // Traffic re-route action
     const trafficRouteHelperAction = new codepipeline_actions.CodeBuildAction({
       actionName: 'CodeBuild',
       project: trafficRouteHelperProject,
@@ -348,7 +329,7 @@ export class containerCICDCdkStack extends Stack {
       environmentVariables: {
         CODEDEPLOY_DEPLOYMENT_ID: { value: '#{custompipeline.DEPLOYMENT_ID}' }
       }
-    })
+    });
 
     const ecsPipeline = new codepipeline.Pipeline(this, `${appName}-${stageName}-ecs-deploy-pipeline`, {
       pipelineName: `codepipeline-${appName}Deploy-${stageName}-${regionShort}-01`,
@@ -399,6 +380,76 @@ export class containerCICDCdkStack extends Stack {
           "ssm:*",
         ],
         resources: ['*']
-      }))
+    }));
+    
+    // Lambda execution role for CodeDeploy rollback
+    const rollbackLambdaRole = new iam.Role(this, `${appName}-rollbackLambdaRole`, {
+      roleName: `iam-${appName}Rollback-${stageName}-cac1-01`,
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+    });
+
+    rollbackLambdaRole.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'))
+    rollbackLambdaRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "sts:AssumeRole",
+        ],
+        resources: [`arn:aws:iam::${accountId}:role/iam-${appName}Codedeploy-rollback-role`]
+    }));
+    
+    // Lambda for CodeDeploy Rollback
+    const rollbackLambda = new cdk.aws_lambda.Function(this, `${appName}-rollback-lambda`, {
+      functionName: `lambda-${appName}RollBack-${stageName}-cac1-01`,
+      role: rollbackLambdaRole,
+      timeout: cdk.Duration.seconds(300),
+      code: cdk.aws_lambda.Code.fromAsset(
+        path.join(__dirname, 'lambdas'),
+        {
+          exclude: ['**', '!codedeploy_rollback.mjs']
+        }),
+      handler: 'codedeploy_rollback.handler',
+      runtime: cdk.aws_lambda.Runtime.NODEJS_18_X,
+      environment: {
+        'CLUSTER_NAME': `${multiEcs.clusterName}`,
+        'CODEDEPLOY_APP_NAME': `${multiEcs.codeDeployAppName}`,
+        'CODEDEPLOY_GROUP_NAME': `${multiEcs.codeDeployGroupName}`,
+        'WORKLOAD_ACCOUNT_ID': accountId,
+        'APP_NAME': appName,
+      }
+    });
+
+    // Event rule for pipeline manual approval rejection
+    const pipelineRejectionRule = new cdk.aws_events.Rule(this, `${appName}-${stageName}-approval-state-change`, {
+      ruleName: `event-${appName}ApprovalStateChange-${stageName}-${regionShort}-01`,
+      eventPattern: {
+        source: ["aws.codepipeline"],
+        detailType: ["CodePipeline Action Execution State Change"],
+        detail: {
+          state: ['FAILED'],
+          pipeline: [ecsPipeline.pipelineName],
+          stage: ['Approval'],
+          action: [approvalAction.actionProperties.actionName],
+        },
+      },
+    });
+
+    pipelineRejectionRule.addTarget(new cdk.aws_events_targets.LambdaFunction(rollbackLambda));
+
+    // Event rule for pipeline CodeDeploy Stage Failure
+    const pipelineCodeBuildRejectionRule = new cdk.aws_events.Rule(this, `${appName}-${stageName}-codedeploy-state-change`, {
+      ruleName: `event-${appName}CodeDeployStateChange-${stageName}-${regionShort}-01`,
+      eventPattern: {
+        source: ["aws.codepipeline"],
+        detailType: ["CodePipeline Action Execution State Change"],
+        detail: {
+          state: ['FAILED'],
+          pipeline: [ecsPipeline.pipelineName],
+          stage: ['CodeDeploy'],
+          action: [codeDeployHelperAction.actionProperties.actionName],
+        },
+      },
+    });
+
+    pipelineCodeBuildRejectionRule.addTarget(new cdk.aws_events_targets.LambdaFunction(rollbackLambda));
   }
 }

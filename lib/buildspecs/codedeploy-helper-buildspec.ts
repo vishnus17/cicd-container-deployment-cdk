@@ -45,6 +45,7 @@ export const codeDeployHelperContent = {
         "export AWS_SESSION_TOKEN=$RoleSessionToken",
         "DEPLOYMENT_ID=$(echo $(aws deploy create-deployment --application-name \"${CODEDEPLOY_APP_NAME}\" --deployment-group-name \"${CODEDEPLOY_GROUP_NAME}\" --s3-location bucket=$BucketName,bundleType=yaml,key=$new_key) | jq -r '.deploymentId')",
         "echo $DEPLOYMENT_ID",
+        "aws ssm put-parameter --name /${APP_NAME}/DeploymentId --value $DEPLOYMENT_ID --type String --overwrite",
         "DEPLOYMENT_STATUS=$(echo $(aws deploy get-deployment --deployment-id $DEPLOYMENT_ID) | jq -r '.deploymentInfo''.status')",
         "while [ \"$DEPLOYMENT_STATUS\" != \"Ready\" ]; do DEPLOYMENT_STATUS=$(echo $(aws deploy get-deployment --deployment-id $DEPLOYMENT_ID) | jq -r '.deploymentInfo''.status') && echo \"--- DEPLOYMENT IN PROGRESS ---\" && sleep 10 ; done",
         'echo "******** DEPLOYMENT STATUS $DEPLOYMENT_STATUS ********"'
@@ -52,7 +53,6 @@ export const codeDeployHelperContent = {
     },
     post_build: {
       commands: [
-
       ]
     },
   },
